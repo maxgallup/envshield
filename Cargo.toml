@@ -1,0 +1,16 @@
+[package]
+version = "0.0.1"
+authors = ["Max Gallup <maxgallup@pm.me>"]
+description = "Define a schema for your .env files."
+name = "envshield"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.52", features = ["derive"] }
+dotenv = "0.15.0"
+miette = { version = "7.6.0", features = ["fancy"] }
+serde = {version = "1.0.228", features = ["derive"]}
+serde_json = "1.0.145"
+thiserror = "2.0.17"
+toml = "0.9.8"
