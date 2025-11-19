@@ -299,6 +299,27 @@ impl TryFrom<ParsedSchema> for ValidatedSchema {
             })
             .collect();
 
+        // Quick check to see if any of the references in the unresolved
+        // don't exist in the resolved keys, then we can exit early
+        for unresolved_node in unresolved.iter() {
+            for chunk in unresolved_node.chunks.iter() {
+                match chunk {
+                    StringChunk::Original(_) => (),
+                    StringChunk::Reference(r) => {
+                        if !raw_config.contains_key(r) {
+                            return Err(ShieldError::MissingReferenceExtended(
+                                unresolved_node.key.clone(),
+                                r.clone(),
+                            ));
+                        }
+
+                        if &unresolved_node.key == r {
+                            return Err(ShieldError::CyclicReference(r.clone()));
+                        }
+                    }
+                }
+            }
+        }
         info!("{:#?}", resolved);
         info!("{:#?}", unresolved);
 
