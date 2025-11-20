@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fmt::Display;
-use std::thread::available_parallelism;
 
 use clap::Parser;
 
@@ -159,8 +158,8 @@ impl TryFrom<ValidatedSchema> for FinalizedSchema {
 
     fn try_from(value: ValidatedSchema) -> Result<FinalizedSchema, ShieldError> {
         match value {
-            ValidatedSchema::Version1(result) => {
-                let mut result = result.clone();
+            ValidatedSchema::Version1(hash_map) => {
+                let mut result = hash_map.clone();
                 // We start by looking at all of the variables that have no references in their value
                 // or in their default section
                 let nodes: Vec<Node> = result
@@ -217,6 +216,21 @@ impl TryFrom<ValidatedSchema> for FinalizedSchema {
                     })
                     .collect();
 
+                let dead_ends: HashMap<&String, &ValidatedAttribute> = hash_map
+                    .iter()
+                    .filter(|(key, _)| {
+                        let not_resolved = resolved
+                            .iter()
+                            .all(|resolved_node| &resolved_node.key != *key);
+
+                        let not_unresolved = unresolved
+                            .iter()
+                            .all(|unresolved_node| &unresolved_node.key != *key);
+
+                        not_resolved && not_unresolved
+                    })
+                    .collect();
+
                 // Quick check to see if any of the references in the unresolved
                 // don't exist in the resolved keys, then we can exit early
                 for unresolved_node in unresolved.iter() {
@@ -224,6 +238,15 @@ impl TryFrom<ValidatedSchema> for FinalizedSchema {
                         match chunk {
                             StringChunk::Original(_) => (),
                             StringChunk::Reference(r) => {
+                                // If there is a reference to a Node that can't be resolved,
+                                // exit early.
+                                if dead_ends.contains_key(r) {
+                                    return Err(ShieldError::DeadEndReference(
+                                        unresolved_node.key.clone(),
+                                        r.clone(),
+                                    ));
+                                }
+
                                 if !result.contains_key(r) {
                                     return Err(ShieldError::MissingReferenceExtended(
                                         unresolved_node.key.clone(),

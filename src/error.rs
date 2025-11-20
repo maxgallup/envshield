@@ -14,6 +14,9 @@ pub enum ShieldError {
     #[error("key [{0}] contains reference '{1}' that doesn't exist")]
     MissingReferenceExtended(String, String),
 
+    #[error("key [{0}] contains a reference to '{1}', but '{1}' can't resolve that reference")]
+    DeadEndReference(String, String),
+
     #[error("parsing reference: {0}")]
     ReferenceParsing(String),
 
