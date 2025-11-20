@@ -1,104 +1,20 @@
 use std::collections::HashMap;
-use std::fmt::{self, Display};
+use std::fmt::Display;
+use std::thread::available_parallelism;
 
 use clap::Parser;
-use dotenv;
 
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 
+mod error;
+use error::ShieldError;
+mod node;
+use node::{Node, ResolvedNode, StringChunk, UnresolvedNode, extract_string_chunks};
 mod log;
 
 /// The main schema file that is read into memory
 const SCHEMA_FILENAME: &str = "env.toml";
-
-/// Node type used to find reference dependency chains
-#[derive(Debug, Clone)]
-enum Node {
-    /// These nodes are pointed to by other reference Nodes
-    Resolved(ResolvedNode),
-    /// When None, this is a root node with no dependencies
-    Unresolved(UnresolvedNode),
-}
-
-#[derive(Debug, Clone)]
-struct ResolvedNode {
-    key: String,
-    value: String,
-}
-
-#[derive(Debug, Clone)]
-struct UnresolvedNode {
-    key: String,
-    chunks: Vec<StringChunk>,
-    offending_node: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-enum StringChunk {
-    Original(String),
-    Reference(String),
-}
-
-/// Returns a chopped up version of the original string where each reference is denoted marked.
-fn extract_string_chunks(
-    key: &String,
-    input_string: &String,
-) -> Result<Vec<StringChunk>, ShieldError> {
-    let start_delimiter = "{{";
-    let end_delimiter = "}}";
-
-    let mut result: Vec<StringChunk> = vec![];
-    let mut processed_string: &str = &input_string;
-
-    // 1. Start by finding match of starting delimiter
-    loop {
-        // If we can't find the starting delimiter it, then there either never was one to begin
-        // with or we're done processing!
-        let Some(start_delim_index) = processed_string.find(start_delimiter) else {
-            let string_part = &processed_string[..].to_string();
-            result.push(StringChunk::Original(string_part.clone()));
-            break;
-        };
-
-        if start_delim_index >= processed_string.len() {
-            return Err(ShieldError::ReferenceParsing(format!(
-                "position of starting delimiter '{}' (index: {}) out of string bounds!",
-                start_delimiter, start_delim_index
-            )));
-        };
-
-        let name_start = start_delim_index + start_delimiter.len();
-        let Some(end_delim_offset) = &processed_string[name_start..].find(end_delimiter) else {
-            return Err(ShieldError::ReferenceParsing(format!(
-                "key [{}] is missing closing delimiter '{}'",
-                key, end_delimiter
-            )));
-        };
-
-        let name_end = name_start + end_delim_offset;
-        let string_part = &processed_string[..start_delim_index].to_string();
-        let reference_name = &processed_string[name_start..name_end].trim().to_string();
-
-        if reference_name.contains("{") || reference_name.contains("}") {
-            return Err(ShieldError::ReferenceParsing(format!(
-                "key [{}] has a reference with nested brackets",
-                key
-            )));
-        }
-
-        if !string_part.is_empty() {
-            result.push(StringChunk::Original(string_part.clone()))
-        }
-
-        if !reference_name.is_empty() {
-            result.push(StringChunk::Reference(reference_name.clone()))
-        }
-        processed_string = &processed_string[(name_end + end_delimiter.len())..];
-    }
-
-    Ok(result)
-}
 
 /// Tries to resolve the first unresolved node in the list. If successful, it will remove it from
 /// the unresolved list and add it to the resolved list. If not successful, returns false.
@@ -109,12 +25,11 @@ fn try_to_resolve(
     let unresolved_node_opt = unresolved.first_mut();
 
     if let Some(unresolved_node) = unresolved_node_opt {
+        info!("trying to resolve '{}'", unresolved_node.key);
+
         let available: HashMap<&String, &String> =
             resolved.iter().map(|r| (&r.key, &r.value)).collect();
 
-        info!("------------------------------------------------");
-        info!("attempting to resolve {:#?}", unresolved_node);
-        info!("with these nodes available: {:#?}", available);
         let resolved_string_chunks: Vec<String> = unresolved_node
             .chunks
             .iter()
@@ -124,7 +39,7 @@ fn try_to_resolve(
                     if let Some(resolved) = available.get(r) {
                         Ok(resolved.to_string().clone())
                     } else {
-                        warn!("could not resolve: {}", r);
+                        warn!("could not yet resolve: {}", r);
                         unresolved_node.offending_node = Some(r.clone());
                         Err(ShieldError::UnresolvedReference)
                     }
@@ -133,8 +48,6 @@ fn try_to_resolve(
             .collect::<Result<Vec<_>, _>>()?;
 
         let resolved_string: String = resolved_string_chunks.join("");
-        info!(">> resolved string:");
-        info!("       '{}'", resolved_string);
 
         // Add the newly resolved node to the existing ones
         resolved.push(ResolvedNode {
@@ -162,7 +75,7 @@ impl TryFrom<ParsedSchema> for ValidatedSchema {
     type Error = ShieldError;
 
     fn try_from(value: ParsedSchema) -> Result<Self, ShieldError> {
-        let raw_config = match value {
+        let mut raw_config = match value {
             ParsedSchema::Version1(hash_map) => {
                 // Check that only allowed combinations of options are possible
                 hash_map
@@ -320,24 +233,23 @@ impl TryFrom<ParsedSchema> for ValidatedSchema {
                 }
             }
         }
-        info!("{:#?}", resolved);
-        info!("{:#?}", unresolved);
 
         let mut num_unresolved = unresolved.len();
         let mut stagnation_counter = 0;
+        let mut iteration = 0;
 
         loop {
+            info!("iteration {}", iteration);
+            iteration = iteration + 1;
             num_unresolved = unresolved.len();
 
             if !unresolved.is_empty() {
                 match try_to_resolve(&mut unresolved, &mut resolved) {
                     Ok(_) => {
-                        info!("made progress!");
                         stagnation_counter = 0;
+                        num_unresolved = num_unresolved - 1;
                     }
-                    Err(e) => {
-                        warn!("did not make progress");
-                    }
+                    Err(_) => (),
                 }
 
                 if let Some(last) = unresolved.pop() {
@@ -348,20 +260,18 @@ impl TryFrom<ParsedSchema> for ValidatedSchema {
             }
 
             if unresolved.is_empty() {
-                info!("empty, leaving");
                 break;
             }
 
             if num_unresolved == unresolved.len() {
                 stagnation_counter = stagnation_counter + 1;
-                error!("setting sc to {}", stagnation_counter);
             }
 
             if stagnation_counter == (10 * unresolved.len()) {
                 let unresolved_node_opt = unresolved.first();
                 if let Some(missing) = unresolved_node_opt {
                     error!("sc, {}", stagnation_counter);
-                    error!("total {} unresolved: {:#?}", unresolved.len(), unresolved);
+                    error!("total unresolved: {}", unresolved.len());
                     if let Some(offender) = &missing.offending_node {
                         return Err(ShieldError::MissingReferenceExtended(
                             missing.key.clone(),
@@ -374,8 +284,21 @@ impl TryFrom<ParsedSchema> for ValidatedSchema {
             }
         }
 
-        info!("FINISHED");
-        info!("{:#?}", resolved);
+        info!("all references resolved");
+
+        for (key, validated_attr) in raw_config.iter_mut() {
+            if let Some(resolved_node) = resolved.iter().find(|node| &node.key == key) {
+                match validated_attr.options {
+                    ValidatedOptions::WithValue(ref mut value) => {
+                        *value = resolved_node.value.clone();
+                    }
+                    ValidatedOptions::WithDefault(ref mut description) => {
+                        *description = resolved_node.value.clone();
+                    }
+                    _ => (),
+                }
+            }
+        }
 
         // 1. While there are unresolved nodes, pick an unresolved node and attempt to resolve it
         // 2. if success, remove it from unresolved nodes and put it into resolved nodes
@@ -496,51 +419,6 @@ where
         Err(de::Error::custom("host cannot be empty"))
     } else {
         Ok(s)
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize, thiserror::Error)]
-enum ShieldError {
-    #[error("unresolved reference")]
-    UnresolvedReference,
-
-    #[error("key [{0}] contains a reference which points to itself")]
-    CyclicReference(String),
-
-    #[error("key [{0}] contains a reference that doesn't exist")]
-    MissingReference(String),
-
-    #[error("key [{0}] contains reference '{1}' that doesn't exist")]
-    MissingReferenceExtended(String, String),
-
-    #[error("parsing reference: {0}")]
-    ReferenceParsing(String),
-
-    #[error("with schema '.env.toml': {0}")]
-    Unrecoverable(String),
-
-    #[error("could not find schema '.env.toml': {0}")]
-    MissingSchema(String),
-
-    #[error("invalid schema: {0}")]
-    InvalidSchema(String),
-
-    #[error("toml validation: {0}")]
-    TomlValidation(String),
-}
-
-impl From<std::io::Error> for ShieldError {
-    fn from(value: std::io::Error) -> Self {
-        match value.kind() {
-            std::io::ErrorKind::NotFound => ShieldError::MissingSchema(value.to_string()),
-            _ => ShieldError::Unrecoverable(value.to_string()),
-        }
-    }
-}
-
-impl From<toml::de::Error> for ShieldError {
-    fn from(value: toml::de::Error) -> Self {
-        ShieldError::TomlValidation(value.to_string())
     }
 }
 
