@@ -25,8 +25,6 @@ fn try_to_resolve(
     let unresolved_node_opt = unresolved.first_mut();
 
     if let Some(unresolved_node) = unresolved_node_opt {
-        info!("trying to resolve '{}'", unresolved_node.key);
-
         let available: HashMap<&String, &String> =
             resolved.iter().map(|r| (&r.key, &r.value)).collect();
 
@@ -39,7 +37,7 @@ fn try_to_resolve(
                     if let Some(resolved) = available.get(r) {
                         Ok(resolved.to_string().clone())
                     } else {
-                        warn!("could not yet resolve: {}", r);
+                        info!("    -- couldn't resolve {}", r);
                         unresolved_node.offending_node = Some(r.clone());
                         Err(ShieldError::UnresolvedReference)
                     }
@@ -48,7 +46,7 @@ fn try_to_resolve(
             .collect::<Result<Vec<_>, _>>()?;
 
         let resolved_string: String = resolved_string_chunks.join("");
-
+        info!("    >> resolved {}", unresolved_node.key);
         // Add the newly resolved node to the existing ones
         resolved.push(ResolvedNode {
             key: unresolved_node.key.clone(),
@@ -65,8 +63,8 @@ fn try_to_resolve(
     return Err(ShieldError::UnresolvedReference);
 }
 
-/// Describes semantically valid schemas
-#[derive(Debug, Serialize)]
+/// Describes semantically valid schemas but with unresolved references
+#[derive(Debug, Clone, Serialize)]
 enum ValidatedSchema {
     Version1(HashMap<String, ValidatedAttribute>),
 }
@@ -74,8 +72,8 @@ enum ValidatedSchema {
 impl TryFrom<ParsedSchema> for ValidatedSchema {
     type Error = ShieldError;
 
-    fn try_from(value: ParsedSchema) -> Result<Self, ShieldError> {
-        let mut raw_config = match value {
+    fn try_from(value: ParsedSchema) -> Result<ValidatedSchema, ShieldError> {
+        let validated = match value {
             ParsedSchema::Version1(hash_map) => {
                 // Check that only allowed combinations of options are possible
                 hash_map
@@ -146,224 +144,176 @@ impl TryFrom<ParsedSchema> for ValidatedSchema {
             }
         };
 
-        raw_config
-            .clone()
-            .into_iter()
-            .for_each(|(key, attr)| match &attr.options {
-                ValidatedOptions::WithValue(value) | ValidatedOptions::WithDefault(value) => {
-                    let _ = extract_string_chunks(&key, value);
-                }
-                _ => (),
-            });
+        Ok(ValidatedSchema::Version1(validated))
+    }
+}
 
-        // We start by looking at all of the variables that have no references in their value
-        // or in their default section
-        let nodes: Vec<Node> = raw_config
-            .clone()
-            .into_iter()
-            .map(|(key, attr)| match &attr.options {
-                ValidatedOptions::WithValue(input_string)
-                | ValidatedOptions::WithDefault(input_string) => {
-                    let string_chunks = extract_string_chunks(&key, &input_string)?;
-                    let contains_references = string_chunks
-                        .iter()
-                        .any(|chunk| matches!(chunk, StringChunk::Reference(_)));
+/// Describes valid schemas with resolved references
+#[derive(Debug, Serialize)]
+enum FinalizedSchema {
+    Version1(HashMap<String, ValidatedAttribute>),
+}
 
-                    if contains_references {
-                        Ok(Some(Node::Unresolved(UnresolvedNode {
-                            key,
-                            chunks: string_chunks,
-                            offending_node: None,
-                        })))
-                    } else {
-                        Ok(Some(Node::Resolved(ResolvedNode {
-                            key,
-                            value: input_string.clone(),
-                        })))
-                    }
-                }
-                _ => Ok(None),
-            })
-            .collect::<Result<Vec<Option<Node>>, ShieldError>>()?
-            .into_iter()
-            .flatten()
-            .collect();
+impl TryFrom<ValidatedSchema> for FinalizedSchema {
+    type Error = ShieldError;
 
-        let mut resolved: Vec<ResolvedNode> = nodes
-            .clone()
-            .into_iter()
-            .filter_map(|node| {
-                if let Node::Resolved(root) = node {
-                    Some(root)
-                } else {
-                    None
-                }
-            })
-            .collect();
+    fn try_from(value: ValidatedSchema) -> Result<FinalizedSchema, ShieldError> {
+        match value {
+            ValidatedSchema::Version1(result) => {
+                let mut result = result.clone();
+                // We start by looking at all of the variables that have no references in their value
+                // or in their default section
+                let nodes: Vec<Node> = result
+                    .clone()
+                    .into_iter()
+                    .map(|(key, attr)| match &attr.options {
+                        ValidatedOptions::WithValue(input_string)
+                        | ValidatedOptions::WithDefault(input_string) => {
+                            let string_chunks = extract_string_chunks(&key, &input_string)?;
+                            let contains_references = string_chunks
+                                .iter()
+                                .any(|chunk| matches!(chunk, StringChunk::Reference(_)));
 
-        let mut unresolved: Vec<UnresolvedNode> = nodes
-            .into_iter()
-            .filter_map(|node| {
-                if let Node::Unresolved(child) = node {
-                    Some(child)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Quick check to see if any of the references in the unresolved
-        // don't exist in the resolved keys, then we can exit early
-        for unresolved_node in unresolved.iter() {
-            for chunk in unresolved_node.chunks.iter() {
-                match chunk {
-                    StringChunk::Original(_) => (),
-                    StringChunk::Reference(r) => {
-                        if !raw_config.contains_key(r) {
-                            return Err(ShieldError::MissingReferenceExtended(
-                                unresolved_node.key.clone(),
-                                r.clone(),
-                            ));
+                            if contains_references {
+                                Ok(Some(Node::Unresolved(UnresolvedNode {
+                                    key,
+                                    chunks: string_chunks,
+                                    offending_node: None,
+                                })))
+                            } else {
+                                Ok(Some(Node::Resolved(ResolvedNode {
+                                    key,
+                                    value: input_string.clone(),
+                                })))
+                            }
                         }
+                        _ => Ok(None),
+                    })
+                    .collect::<Result<Vec<Option<Node>>, ShieldError>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect();
 
-                        if &unresolved_node.key == r {
-                            return Err(ShieldError::CyclicReference(r.clone()));
+                let mut resolved: Vec<ResolvedNode> = nodes
+                    .clone()
+                    .into_iter()
+                    .filter_map(|node| {
+                        if let Node::Resolved(root) = node {
+                            Some(root)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                let mut unresolved: Vec<UnresolvedNode> = nodes
+                    .into_iter()
+                    .filter_map(|node| {
+                        if let Node::Unresolved(child) = node {
+                            Some(child)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                // Quick check to see if any of the references in the unresolved
+                // don't exist in the resolved keys, then we can exit early
+                for unresolved_node in unresolved.iter() {
+                    for chunk in unresolved_node.chunks.iter() {
+                        match chunk {
+                            StringChunk::Original(_) => (),
+                            StringChunk::Reference(r) => {
+                                if !result.contains_key(r) {
+                                    return Err(ShieldError::MissingReferenceExtended(
+                                        unresolved_node.key.clone(),
+                                        r.clone(),
+                                    ));
+                                }
+
+                                if &unresolved_node.key == r {
+                                    return Err(ShieldError::CyclicReference(r.clone()));
+                                }
+                            }
                         }
                     }
                 }
-            }
-        }
 
-        let mut num_unresolved = unresolved.len();
-        let mut stagnation_counter = 0;
-        let mut iteration = 0;
+                let mut stagnation_counter = 0;
+                let mut iteration = 0;
 
-        loop {
-            info!("iteration {}", iteration);
-            iteration = iteration + 1;
-            num_unresolved = unresolved.len();
+                loop {
+                    info!(
+                        "{} ({}/{})",
+                        iteration,
+                        stagnation_counter,
+                        unresolved.len()
+                    );
+                    iteration = iteration + 1;
 
-            if !unresolved.is_empty() {
-                match try_to_resolve(&mut unresolved, &mut resolved) {
-                    Ok(_) => {
-                        stagnation_counter = 0;
-                        num_unresolved = num_unresolved - 1;
+                    if unresolved.is_empty() {
+                        // No work to do
+                        break;
                     }
-                    Err(_) => (),
-                }
 
-                if let Some(last) = unresolved.pop() {
-                    unresolved.insert(0, last);
-                } else {
-                    break;
-                }
-            }
+                    match try_to_resolve(&mut unresolved, &mut resolved) {
+                        Ok(_) => {
+                            // Reset the counter, since we have made progress.
+                            stagnation_counter = 0;
+                        }
+                        Err(_) => {
+                            // Increase the counter, since we did not make progress
+                            stagnation_counter = stagnation_counter + 1;
+                        }
+                    }
 
-            if unresolved.is_empty() {
-                break;
-            }
-
-            if num_unresolved == unresolved.len() {
-                stagnation_counter = stagnation_counter + 1;
-            }
-
-            if stagnation_counter == (10 * unresolved.len()) {
-                let unresolved_node_opt = unresolved.first();
-                if let Some(missing) = unresolved_node_opt {
-                    error!("sc, {}", stagnation_counter);
-                    error!("total unresolved: {}", unresolved.len());
-                    if let Some(offender) = &missing.offending_node {
-                        return Err(ShieldError::MissingReferenceExtended(
-                            missing.key.clone(),
-                            offender.clone(),
-                        ));
+                    if let Some(last) = unresolved.pop() {
+                        unresolved.insert(0, last);
                     } else {
-                        return Err(ShieldError::MissingReference(missing.key.clone()));
+                        // We popped the last one, so we are done
+                        break;
+                    }
+
+                    // If we haven't been making progress for more than twice the number
+                    // of unresolved ones we can be sure that there is either a loop, or there
+                    // is a reference to a node that can't be resolved.
+                    // TODO: check for that case earlier
+                    if stagnation_counter > (2 * unresolved.len()) && !unresolved.is_empty() {
+                        if let Some(missing) = unresolved.first() {
+                            error!("total unresolved: {}", unresolved.len());
+                            if let Some(offender) = &missing.offending_node {
+                                return Err(ShieldError::MissingReferenceExtended(
+                                    missing.key.clone(),
+                                    offender.clone(),
+                                ));
+                            } else {
+                                return Err(ShieldError::MissingReference(missing.key.clone()));
+                            }
+                        } else {
+                            error!("expected to see at least one unresolved node, but didn't");
+                        }
                     }
                 }
-            }
-        }
 
-        info!("all references resolved");
+                info!("all references resolved");
 
-        for (key, validated_attr) in raw_config.iter_mut() {
-            if let Some(resolved_node) = resolved.iter().find(|node| &node.key == key) {
-                match validated_attr.options {
-                    ValidatedOptions::WithValue(ref mut value) => {
-                        *value = resolved_node.value.clone();
+                for (key, validated_attr) in result.iter_mut() {
+                    if let Some(resolved_node) = resolved.iter().find(|node| &node.key == key) {
+                        match validated_attr.options {
+                            ValidatedOptions::WithValue(ref mut value) => {
+                                *value = resolved_node.value.clone();
+                            }
+                            ValidatedOptions::WithDefault(ref mut description) => {
+                                *description = resolved_node.value.clone();
+                            }
+                            _ => (),
+                        }
                     }
-                    ValidatedOptions::WithDefault(ref mut description) => {
-                        *description = resolved_node.value.clone();
-                    }
-                    _ => (),
                 }
+
+                Ok(FinalizedSchema::Version1(result))
             }
         }
-
-        // 1. While there are unresolved nodes, pick an unresolved node and attempt to resolve it
-        // 2. if success, remove it from unresolved nodes and put it into resolved nodes
-        // 3. if fail, try the next node.
-
-        // for child in children.iter() {
-        //     for parent in child.parents.iter() {
-
-        //         if parent == &child.key {
-        //             return Err(ShieldError::CyclicReference(parent.clone()));
-        //         }
-
-        //         let valid_destinations =
-        //         // for potential_node in nodes.iter() {
-        //         //     match potential_node {
-        //         //         RefNode::Root(RootNode { key: root_key }) => {
-        //         //             if
-        //         //         },
-        //         //         RefNode::Child(ChildNode { key: child_key, _ }) => todo!(),
-        //         //     }
-        //         // }
-        //     }
-
-        //     // for parent in node_parents.iter() {
-        //     //     for ref_node in nodes.iter() {
-        //     //         // match ref_node {
-        //     //         //     RefNode::Root { key: ref_key } => {
-        //     //         //         if node_key == ref_key {
-        //     //         //             return Err(ShieldError::CyclicReference(ref_key.clone()));
-        //     //         //         }
-        //     //         //     }
-        //     //         //     RefNode::Child { key: child_key, parents } => {
-        //     //         //         if node_key ==
-        //     //         //     },
-        //     //         // }
-
-        //     //         // if key == ref_node {
-        //     //         //     return Err(ShieldError::MissingReference());
-        //     //         // }
-        //     //     }
-
-        //     //     if !raw_config.contains_key(parent) {
-        //     //         return Err(ShieldError::MissingReference(key.clone(), parent.clone()));
-        //     //     }
-        //     // }
-        // }
-
-        // let a: Vec<(&str, Vec<&str>)> = non_roots
-        //     .into_iter()
-        //     .flat_map(|non_root| {
-        //         if let Some(parents) = &non_root.parents {
-        //             Some((
-        //                 non_root.key,
-        //                 parents
-        //                     .into_iter()
-        //                     .filter(|reference| !raw_config.contains_key(reference.clone()))
-        //                     .collect::<Vec<&str>>(),
-        //             ))
-        //         } else {
-        //             None
-        //         }
-        //     })
-        //     .collect();
-
-        Ok(ValidatedSchema::Version1(raw_config))
     }
 }
 
@@ -464,8 +414,8 @@ impl Display for ShieldResponse {
     }
 }
 
-impl ValidatedSchema {
-    fn new() -> Result<ValidatedSchema, ShieldError> {
+impl FinalizedSchema {
+    fn new() -> Result<FinalizedSchema, ShieldError> {
         info!("reading: {}", SCHEMA_FILENAME);
         let schema_contents = std::fs::read_to_string(SCHEMA_FILENAME)?;
 
@@ -475,13 +425,16 @@ impl ValidatedSchema {
         info!("validating schema");
         let validated_schema = ValidatedSchema::try_from(parsed)?;
 
-        Ok(validated_schema)
+        info!("resolving references");
+        let finalized_schema = FinalizedSchema::try_from(validated_schema)?;
+
+        Ok(finalized_schema)
     }
 }
 
 impl ShieldResponse {
     fn new() -> ShieldResponse {
-        let schema = match ValidatedSchema::new() {
+        let schema = match FinalizedSchema::new() {
             Ok(s) => s,
             Err(err) => match err {
                 ShieldError::Unrecoverable(err) => {
