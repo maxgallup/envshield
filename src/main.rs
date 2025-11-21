@@ -629,7 +629,10 @@ impl Display for ShieldResponse {
                         num_correct
                     );
 
-                    if total_missing == 0 && checks_from_env.missing_optional.is_empty() {
+                    if total_missing == 0
+                        && checks_from_env.missing_optional.is_empty()
+                        && checks_from_env.incorrect_values.is_empty()
+                    {
                         let _ = writeln!(f, "{}", "Success!".green().bold(),);
                     }
                 }
