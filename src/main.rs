@@ -616,14 +616,22 @@ impl Display for ShieldResponse {
                     self.schema_file
                 );
 
+                let total_missing = checks_from_env.missing_values.len()
+                    + checks_from_env.missing_default.len()
+                    + checks_from_env.missing_secrets.len();
+
                 let num_correct = checks_from_env.existing_subset.len();
                 if num_correct > 0 {
                     let _ = writeln!(
                         f,
-                        "{} {}",
-                        "Conforming variables:".green().bold(),
+                        "{} {} variables",
+                        "Correct: ".green().bold(),
                         num_correct
                     );
+
+                    if total_missing == 0 && checks_from_env.missing_optional.is_empty() {
+                        let _ = writeln!(f, "{}", "Success!".green().bold(),);
+                    }
                 }
 
                 let _ = writeln!(f);
@@ -673,9 +681,6 @@ impl Display for ShieldResponse {
                     let _ = writeln!(f);
                 }
 
-                let total_missing = checks_from_env.missing_values.len()
-                    + checks_from_env.missing_default.len()
-                    + checks_from_env.missing_secrets.len();
                 if total_missing > 0 {
                     let _ = writeln!(
                         f,
