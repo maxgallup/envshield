@@ -1,3 +1,51 @@
+//! # envshield
+//!
+//! `envshield` is a simple tool that enforces variables in an environment according to schema.
+//!
+//! ## Quick Start
+//!
+//! ```bash
+//! # Install
+//! cargo install envshield
+//!
+//! # Run the command in the same directory as the schema file: env.toml
+//! envshield
+//! ```
+//!
+//! The schema defines the expected environment variables that your project depends on. It allows
+//! you to specify whether environment variables are optional, have default values or even expected
+//! concrete values. Based on the schema, it reports what environment variables are present and
+//! whether any of them deviate from expected values. Take the following schema for example:
+//!
+//! ``` toml
+//! # Version must be set to "1"
+//! version = "1"
+//!
+//! # Here we define an environment variable with an expected value and (are required to) provide
+//! # a description. This helps to self document the environment variables in a complex project.
+//! [USER_ACCOUNT]
+//! value = "Jimmy"
+//! description = "Which user account is used by the program."
+//!
+//! # Suggests that an environment variable must be present and provides a default for the user
+//! # to use.
+//! [LOG_LEVEL]
+//! default = "warn"
+//! description = "Which logging level the program uses [debug, warn or error]"
+//!
+//! [C]
+//! description = "variable C"
+//! default = "some_default"
+//!
+//! [D]
+//! description = "variable D"
+//! optional = true
+//!
+//! ```
+//!
+//!
+//!
+
 use clap::Parser;
 use colored::Colorize;
 use std::collections::HashMap;
@@ -13,7 +61,6 @@ use node::{Node, ResolvedNode, StringChunk, UnresolvedNode, extract_string_chunk
 mod log;
 
 /// The main schema file that is read into memory
-const SCHEMA_FILENAME: &str = "env.toml";
 const MAX_DISPLAY_LEN: usize = 50;
 
 type EnvMap = HashMap<String, String>;
@@ -505,14 +552,19 @@ enum ShieldStatus {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+struct ShieldResponse {
+    schema_file: String,
+    status: ShieldStatus,
+    kind: ShieldResponseKind,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
-enum ShieldResponse {
+enum ShieldResponseKind {
     Failed {
-        status: ShieldStatus,
         error: String, // this should include the data from the custom Error type's Display impl
     },
     Success {
-        status: ShieldStatus,
         checks_from_env: Box<SchemaCheck>,
     },
 }
@@ -527,21 +579,18 @@ fn truncated(s: &str) -> String {
 
 impl Display for ShieldResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ShieldResponse::Failed { status: _, error } => {
+        match &self.kind {
+            ShieldResponseKind::Failed { error } => {
                 let _ = writeln!(f, "{} {}", "Error:".red().bold(), error);
 
                 write!(f, "")
             }
-            ShieldResponse::Success {
-                status: _,
-                checks_from_env,
-            } => {
+            ShieldResponseKind::Success { checks_from_env } => {
                 let _ = writeln!(
                     f,
                     "{} schema at: ./{}",
                     "Parsed:".green().bold(),
-                    SCHEMA_FILENAME
+                    self.schema_file
                 );
 
                 let num_correct = checks_from_env.existing_subset.len();
@@ -665,15 +714,21 @@ impl ShieldResponse {
             Ok(s) => s,
             Err(err) => match err {
                 ShieldError::Unrecoverable(err) => {
-                    return Self::Failed {
+                    return Self {
                         status: ShieldStatus::Hopeless,
-                        error: err.to_string(),
+                        schema_file: filename.to_string(),
+                        kind: ShieldResponseKind::Failed {
+                            error: err.to_string(),
+                        },
                     };
                 }
                 _ => {
-                    return Self::Failed {
+                    return Self {
                         status: ShieldStatus::Recoverable,
-                        error: err.to_string(),
+                        schema_file: filename.to_string(),
+                        kind: ShieldResponseKind::Failed {
+                            error: err.to_string(),
+                        },
                     };
                 }
             },
@@ -683,9 +738,12 @@ impl ShieldResponse {
         let env_vars: EnvMap = std::env::vars().collect();
         let checked_from_env = SchemaCheck::new(&schema, &env_vars);
 
-        Self::Success {
+        Self {
             status: ShieldStatus::Operational,
-            checks_from_env: Box::new(checked_from_env),
+            schema_file: filename.to_string(),
+            kind: ShieldResponseKind::Success {
+                checks_from_env: Box::new(checked_from_env),
+            },
         }
     }
 }
@@ -694,6 +752,10 @@ impl ShieldResponse {
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct InputArgs {
+    /// Input schema file
+    #[arg(short, long, default_value_t = format!("env.toml"))]
+    file: String,
+
     /// Output will be in json format to be machine readable
     #[arg(short, long, default_value_t = false)]
     json: bool,
@@ -701,7 +763,7 @@ struct InputArgs {
 
 fn main() {
     let args = InputArgs::parse();
-    let response = ShieldResponse::new(SCHEMA_FILENAME);
+    let response = ShieldResponse::new(&args.file);
     if args.json {
         match serde_json::to_string_pretty(&response) {
             Ok(response) => {
@@ -715,15 +777,9 @@ fn main() {
         print!("{}", response);
     }
 
-    match response {
-        ShieldResponse::Failed {
-            status: _,
-            error: _,
-        } => std::process::exit(1),
-        ShieldResponse::Success {
-            status: _,
-            checks_from_env,
-        } => {
+    match response.kind {
+        ShieldResponseKind::Failed { error: _ } => std::process::exit(1),
+        ShieldResponseKind::Success { checks_from_env } => {
             let total_missing = checks_from_env.missing_values.len()
                 + checks_from_env.missing_default.len()
                 + checks_from_env.missing_secrets.len();
@@ -746,11 +802,8 @@ fn invalid_test(filename: &str) {
     let response = ShieldResponse::new(filename);
 
     assert!(matches!(
-        response,
-        ShieldResponse::Failed {
-            status: _,
-            error: _
-        }
+        response.kind,
+        ShieldResponseKind::Failed { error: _ }
     ));
 }
 
@@ -762,10 +815,7 @@ fn valid_test(filename: &str) {
     let response = ShieldResponse::new(filename);
 
     assert!(matches!(
-        response,
-        ShieldResponse::Success {
-            status: _,
-            checks_from_env: _
-        }
+        response.kind,
+        ShieldResponseKind::Success { checks_from_env: _ }
     ));
 }

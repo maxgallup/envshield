@@ -1,9 +1,15 @@
 [package]
+name = "envshield"
 version = "0.0.1"
 authors = ["Max Gallup <maxgallup@pm.me>"]
 description = "Define a schema for your .env files."
-name = "envshield"
+readme = "README.md"
 edition = "2024"
+homepage = "https://github.com/maxgallup/envshield"
+repository = "https://github.com/maxgallup/envshield"
+license = "MIT OR Apache-2.0"  # Dual license is Rust standard
+keywords = ["cli", "tool", "relevant", "keywords", "max-5"]
+categories = ["command-line-utilities"]  # Check valid categories on crates.io
 
 [dependencies]
 anyhow = "1.0.100"

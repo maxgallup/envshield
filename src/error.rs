@@ -20,10 +20,10 @@ pub enum ShieldError {
     #[error("parsing: {0}")]
     ReferenceParsing(String),
 
-    #[error("with schema: 'env.toml': {0}")]
+    #[error("with schema: {0}")]
     Unrecoverable(String),
 
-    #[error("could not find schema file: 'env.toml': {0}")]
+    #[error("could not find schema file: {0}")]
     MissingSchema(String),
 
     #[error("invalid schema: {0}")]
