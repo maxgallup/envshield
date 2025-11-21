@@ -1,0 +1,18 @@
+version = "1"
+
+
+[A]
+description = "variable A"
+value = "ok"
+
+[B]
+description = "variable B"
+value = "{{ D }}"
+
+[C]
+description = "variable C"
+default = "some_default"
+
+[D]
+description = "variable D"
+optional = true

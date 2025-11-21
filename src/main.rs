@@ -2,7 +2,6 @@ use clap::Parser;
 use colored::Colorize;
 use std::collections::HashMap;
 use std::fmt::Display;
-use std::process::exit;
 
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
@@ -555,7 +554,7 @@ impl Display for ShieldResponse {
                     );
                 }
 
-                let _ = writeln!(f, "");
+                let _ = writeln!(f);
 
                 let max_key_len = checks_from_env
                     .missing_values
@@ -578,7 +577,7 @@ impl Display for ShieldResponse {
                     for key in checks_from_env.missing_optional.iter() {
                         let _ = writeln!(f, "          {:width$} ", key, width = max_key_len);
                     }
-                    let _ = writeln!(f, "");
+                    let _ = writeln!(f);
                 }
 
                 // Incorrect Values
@@ -643,11 +642,11 @@ impl Display for ShieldResponse {
 }
 
 impl FinalizedSchema {
-    fn new() -> Result<FinalizedSchema, ShieldError> {
-        info!("reading: {}", SCHEMA_FILENAME);
-        let schema_contents = std::fs::read_to_string(SCHEMA_FILENAME)?;
+    fn new(filename: &str) -> Result<FinalizedSchema, ShieldError> {
+        info!("reading: {}", filename);
+        let schema_contents = std::fs::read_to_string(filename)?;
 
-        info!("parsing {} into ShieldSchema", SCHEMA_FILENAME);
+        info!("parsing {} into ShieldSchema", filename);
         let parsed: ParsedSchema = toml::from_str(&schema_contents)?;
 
         info!("validating schema");
@@ -661,8 +660,8 @@ impl FinalizedSchema {
 }
 
 impl ShieldResponse {
-    fn new() -> ShieldResponse {
-        let schema = match FinalizedSchema::new() {
+    fn new(filename: &str) -> ShieldResponse {
+        let schema = match FinalizedSchema::new(filename) {
             Ok(s) => s,
             Err(err) => match err {
                 ShieldError::Unrecoverable(err) => {
@@ -702,7 +701,7 @@ struct InputArgs {
 
 fn main() {
     let args = InputArgs::parse();
-    let response = ShieldResponse::new();
+    let response = ShieldResponse::new(SCHEMA_FILENAME);
     if args.json {
         match serde_json::to_string_pretty(&response) {
             Ok(response) => {
@@ -735,4 +734,38 @@ fn main() {
             std::process::exit(0);
         }
     }
+}
+
+use test_generator::test_resources;
+
+#[allow(unused)]
+#[test_resources("test-files/invalid/*.toml")]
+fn invalid_test(filename: &str) {
+    assert!(std::path::Path::new(filename).exists());
+
+    let response = ShieldResponse::new(filename);
+
+    assert!(matches!(
+        response,
+        ShieldResponse::Failed {
+            status: _,
+            error: _
+        }
+    ));
+}
+
+#[allow(unused)]
+#[test_resources("test-files/valid/*.toml")]
+fn valid_test(filename: &str) {
+    assert!(std::path::Path::new(filename).exists());
+
+    let response = ShieldResponse::new(filename);
+
+    assert!(matches!(
+        response,
+        ShieldResponse::Success {
+            status: _,
+            checks_from_env: _
+        }
+    ));
 }
