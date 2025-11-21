@@ -17,15 +17,15 @@
 //! concrete values. Based on the schema, it reports what environment variables are present and
 //! whether any of them deviate from expected values. Take the following schema for example:
 //!
-//! ``` toml
+//! ```toml
 //! # Version must be set to "1"
 //! version = "1"
 //!
 //! # Here we define an environment variable with an expected value and (are required to) provide
 //! # a description. This helps to self document the environment variables in a complex project.
-//! [USER_ACCOUNT]
-//! value = "Jimmy"
-//! description = "Which user account is used by the program."
+//! [DOMAIN]
+//! value = "https://example.com"
+//! description = "The domain used by the application."
 //!
 //! # Suggests that an environment variable must be present and provides a default for the user
 //! # to use.
@@ -33,17 +33,40 @@
 //! default = "warn"
 //! description = "Which logging level the program uses [debug, warn or error]"
 //!
-//! [C]
-//! description = "variable C"
-//! default = "some_default"
+//! # With just a description it enforces that an environment variable is present, but doesn't
+//! # enforce a value. Useful for secrets.
+//! [API_KEY]
+//! description = "Authentication key used only during local testing."
 //!
-//! [D]
-//! description = "variable D"
+//! # Truly optional variables will not be enforced.
+//! [RUST_BACKTRACE]
 //! optional = true
+//! description = "When set to 1, captures stack backtrace of an OS Thread"
+//!
+//! # Values from other variables can be referenced using `{{ KEY }}` syntax.
+//! [DATABASE_URL]
+//! value = "{{ DOMAIN }}/api/database"
+//! description = "Database URL used by the PG database."
 //!
 //! ```
 //!
+//! When running `envshield` in an environment that has none of the variables above set we
+//! get the following output:
 //!
+//! ```text
+//! $ envshield
+//!
+//! Parsed:   schema at: ./env.toml
+//!
+//! Warning:  1 optional variables missing from env:
+//!           RUST_BACKTRACE
+//!
+//! Error:    4 required variables missing from env:
+//! (value)   DOMAIN        : 'https://example.com'
+//! (value)   DATABASE_URL  : 'https://example.com/api/database'
+//! (default) LOG_LEVEL     : 'warn'
+//! (secret)  API_KEY
+//! ```
 //!
 
 use clap::Parser;
@@ -588,7 +611,7 @@ impl Display for ShieldResponse {
             ShieldResponseKind::Success { checks_from_env } => {
                 let _ = writeln!(
                     f,
-                    "{} schema at: ./{}",
+                    "{}   schema at: ./{}",
                     "Parsed:".green().bold(),
                     self.schema_file
                 );

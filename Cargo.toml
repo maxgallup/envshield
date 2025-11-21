@@ -7,9 +7,19 @@ readme = "README.md"
 edition = "2024"
 homepage = "https://github.com/maxgallup/envshield"
 repository = "https://github.com/maxgallup/envshield"
-license = "MIT OR Apache-2.0"  # Dual license is Rust standard
-keywords = ["cli", "tool", "relevant", "keywords", "max-5"]
-categories = ["command-line-utilities"]  # Check valid categories on crates.io
+license = "GPL-3.0-or-later "
+keywords = ["cli", "env", "schema", "toml"]
+categories = ["command-line-interface", "command-line-utilities"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+codegen-units = 1
 
 [dependencies]
 anyhow = "1.0.100"

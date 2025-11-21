@@ -16,6 +16,9 @@ lint: format
 fix:
     @cargo clippy --all-targets --all-features --fix -- -D warnings
 
+build:
+    @cargo build --release
+
 run:
     @cargo run
 
