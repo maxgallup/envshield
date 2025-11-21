@@ -15,6 +15,8 @@ mod log;
 /// The main schema file that is read into memory
 const SCHEMA_FILENAME: &str = "env.toml";
 
+type EnvMap = HashMap<String, String>;
+
 /// Tries to resolve the first unresolved node in the list. If successful, it will remove it from
 /// the unresolved list and add it to the resolved list. If not successful, returns false.
 fn try_to_resolve(
@@ -59,7 +61,7 @@ fn try_to_resolve(
         return Ok(());
     }
 
-    return Err(ShieldError::UnresolvedReference);
+    Err(ShieldError::UnresolvedReference)
 }
 
 /// Describes semantically valid schemas but with unresolved references
@@ -102,7 +104,7 @@ impl TryFrom<ParsedSchema> for ValidatedSchema {
                             ));
                         };
 
-                        if let Some(option) = attr.optional.clone()
+                        if let Some(option) = attr.optional
                             && attr.default.is_none()
                             && attr.value.is_none()
                         {
@@ -115,9 +117,9 @@ impl TryFrom<ParsedSchema> for ValidatedSchema {
                                     },
                                 ));
                             } else {
-                                return Err(ShieldError::InvalidSchema(format!(
-                                    "'optional' can only be set to true"
-                                )));
+                                return Err(ShieldError::InvalidSchema(
+                                    "'optional' can only be set to true".to_string(),
+                                ));
                             }
                         }
 
@@ -134,10 +136,10 @@ impl TryFrom<ParsedSchema> for ValidatedSchema {
                             ));
                         }
 
-                        return Err(ShieldError::InvalidSchema(format!(
+                        Err(ShieldError::InvalidSchema(format!(
                             "illegal combination of options for variable [{}]",
                             key
-                        )));
+                        )))
                     })
                     .collect::<Result<HashMap<_, _>, _>>()?
             }
@@ -168,7 +170,7 @@ impl TryFrom<ValidatedSchema> for FinalizedSchema {
                     .map(|(key, attr)| match &attr.options {
                         ValidatedOptions::WithValue(input_string)
                         | ValidatedOptions::WithDefault(input_string) => {
-                            let string_chunks = extract_string_chunks(&key, &input_string)?;
+                            let string_chunks = extract_string_chunks(&key, input_string)?;
                             let contains_references = string_chunks
                                 .iter()
                                 .any(|chunk| matches!(chunk, StringChunk::Reference(_)));
@@ -272,7 +274,7 @@ impl TryFrom<ValidatedSchema> for FinalizedSchema {
                         stagnation_counter,
                         unresolved.len()
                     );
-                    iteration = iteration + 1;
+                    iteration += 1;
 
                     if unresolved.is_empty() {
                         // No work to do
@@ -286,7 +288,7 @@ impl TryFrom<ValidatedSchema> for FinalizedSchema {
                         }
                         Err(_) => {
                             // Increase the counter, since we did not make progress
-                            stagnation_counter = stagnation_counter + 1;
+                            stagnation_counter += 1;
                         }
                     }
 
@@ -463,17 +465,36 @@ impl ShieldResponse {
                 ShieldError::Unrecoverable(err) => {
                     return Self::Failed {
                         status: ShieldStatus::Hopeless,
-                        error: format!("{}", err),
+                        error: err.to_string(),
                     };
                 }
                 _ => {
                     return Self::Failed {
                         status: ShieldStatus::Recoverable,
-                        error: format!("{}", err),
+                        error: err.to_string(),
                     };
                 }
             },
         };
+
+        // Compare schema requirements with what is in the environment
+        let just_env: EnvMap = std::env::vars().collect();
+
+        // Compare schema requirements with what came from the .env
+        if dotenv::dotenv().is_err() {
+            return Self::Failed {
+                status: ShieldStatus::Recoverable,
+                error: "unable to load '.env' file".to_string(),
+            };
+        }
+
+        let env_with_dotenv: EnvMap = std::env::vars().collect();
+        let _just_dot_env: Vec<_> = env_with_dotenv
+            .iter()
+            .filter(|dot_env_var| just_env.iter().any(|env_var| &env_var == dot_env_var))
+            .collect();
+
+        // todo!();
 
         Self::Success {
             status: ShieldStatus::Operational,

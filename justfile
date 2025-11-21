@@ -16,6 +16,9 @@ lint: format
 fix:
     @cargo clippy --all-targets --all-features --fix -- -D warnings
 
+run:
+    @cargo run
+
 # Run cargo test on a package, optionally specify test
 test package test_name="":
     @cargo test -p {{ package }} {{ test_name }} -- --show-output --nocapture

@@ -1,7 +1,7 @@
 #![allow(unused)]
 
 /// Custom log level
-pub const LOG_LEVEL: LogLevel = LogLevel::Disabled;
+pub const LOG_LEVEL: LogLevel = LogLevel::Debug;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub enum LogLevel {

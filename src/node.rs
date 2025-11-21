@@ -37,7 +37,7 @@ pub fn extract_string_chunks(
     let end_delimiter = "}}";
 
     let mut result: Vec<StringChunk> = vec![];
-    let mut processed_string: &str = &input_string;
+    let mut processed_string: &str = input_string;
 
     // 1. Start by finding match of starting delimiter
     loop {
@@ -67,6 +67,13 @@ pub fn extract_string_chunks(
         let name_end = name_start + end_delim_offset;
         let string_part = &processed_string[..start_delim_index].to_string();
         let reference_name = &processed_string[name_start..name_end].trim().to_string();
+
+        if reference_name.is_empty() {
+            return Err(ShieldError::ReferenceParsing(format!(
+                "key [{}] has an empty reference",
+                key
+            )));
+        }
 
         if reference_name.contains("{") || reference_name.contains("}") {
             return Err(ShieldError::ReferenceParsing(format!(
