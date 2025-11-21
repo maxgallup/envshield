@@ -1,6 +1,6 @@
 [package]
 name = "envshield"
-version = "0.0.1"
+version = "0.0.2"
 authors = ["Max Gallup <maxgallup@pm.me>"]
 description = "Define a schema for your .env files."
 readme = "README.md"
