@@ -1,4 +1,4 @@
-version = "1"
+
 
 
 [A]
@@ -6,7 +6,7 @@ description = "variable A"
 
 [B]
 description = "variable B"
-value = "some_value"
+value = "some_default"
 
 [C]
 description = "variable C"
@@ -14,4 +14,4 @@ default = "some_default"
 
 [D]
 description = "variable D"
-optional = true
+optional

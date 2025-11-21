@@ -1,7 +1,8 @@
+use clap::Parser;
+use colored::Colorize;
 use std::collections::HashMap;
 use std::fmt::Display;
-
-use clap::Parser;
+use std::process::exit;
 
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,7 @@ mod log;
 
 /// The main schema file that is read into memory
 const SCHEMA_FILENAME: &str = "env.toml";
+const MAX_DISPLAY_LEN: usize = 50;
 
 type EnvMap = HashMap<String, String>;
 
@@ -86,7 +88,7 @@ impl TryFrom<ParsedSchema> for ValidatedSchema {
                                 key,
                                 ValidatedAttribute {
                                     description: attr.description,
-                                    options: ValidatedOptions::DescriptionOnly,
+                                    options: ValidatedOptions::Secret,
                                 },
                             ));
                         }
@@ -153,6 +155,98 @@ impl TryFrom<ParsedSchema> for ValidatedSchema {
 #[derive(Debug, Serialize)]
 enum FinalizedSchema {
     Version1(HashMap<String, ValidatedAttribute>),
+}
+
+/// This type is used to hold all information necessary to report back to the user
+/// about the mismatch from the schema to their current environment.
+#[derive(Debug, Deserialize, Serialize)]
+struct SchemaCheck {
+    /// The subset from the schema that was correctly implemented in the environment. There
+    /// are no errors or warnings, when this subset covers the set from the schema entirely.
+    existing_subset: EnvMap,
+    /// This set contains the variables that were marked with values, but the values don't match.
+    incorrect_values: EnvMap,
+    /// This is the set of variables marked as values that don't exist in the env.
+    missing_values: EnvMap,
+    /// This set contains defaults set in the schema that aren't set in the environment.
+    missing_default: EnvMap,
+    /// This set contains options set in the schema that aren't set in the environment.
+    missing_optional: Vec<String>,
+    /// This set contains secrets set in the schema that aren't set in the environment.
+    missing_secrets: Vec<String>,
+    /// Set of keys in env that are not in the schema
+    not_in_schema: Vec<String>,
+}
+
+impl SchemaCheck {
+    fn new(final_schema: &FinalizedSchema, env_map: &EnvMap) -> Self {
+        let mut result = SchemaCheck {
+            existing_subset: HashMap::new(),
+            incorrect_values: HashMap::new(),
+            missing_default: HashMap::new(),
+            missing_values: HashMap::new(),
+            missing_optional: Vec::new(),
+            missing_secrets: Vec::new(),
+            not_in_schema: Vec::new(),
+        };
+
+        match final_schema {
+            FinalizedSchema::Version1(schema_map) => {
+                // Fill the result struct with the necessary data
+                for (schema_key, validated_attribute) in schema_map.iter() {
+                    if let Some((_, env_value)) =
+                        env_map.iter().find(|(b_key, _)| b_key == &schema_key)
+                    {
+                        // Fill the existing subset Map
+                        result
+                            .existing_subset
+                            .insert(schema_key.clone(), env_value.clone());
+                    } else {
+                        // Value is missing, what kind is it?
+                        match &validated_attribute.options {
+                            ValidatedOptions::Optional => {
+                                result.missing_optional.push(schema_key.clone())
+                            }
+                            ValidatedOptions::Secret => {
+                                result.missing_secrets.push(schema_key.clone())
+                            }
+                            ValidatedOptions::WithValue(value) => {
+                                result
+                                    .missing_values
+                                    .insert(schema_key.clone(), value.clone());
+                            }
+                            ValidatedOptions::WithDefault(default) => {
+                                result
+                                    .missing_default
+                                    .insert(schema_key.clone(), default.clone());
+                            }
+                        }
+                    }
+
+                    // Check for any incorrect values
+                    let matching_entry = env_map.iter().find(|(env_key, _)| env_key == &schema_key);
+                    if let Some((_, matching_value)) = matching_entry
+                        && let ValidatedOptions::WithValue(expected_value) =
+                            &validated_attribute.options
+                        && expected_value != matching_value
+                    {
+                        result
+                            .incorrect_values
+                            .insert(schema_key.clone(), expected_value.clone());
+                    }
+                }
+
+                // Check for superfluous variables
+                for env_key in env_map.keys() {
+                    if !schema_map.contains_key(env_key) {
+                        result.not_in_schema.push(env_key.clone());
+                    }
+                }
+            }
+        }
+
+        result
+    }
 }
 
 impl TryFrom<ValidatedSchema> for FinalizedSchema {
@@ -354,7 +448,7 @@ enum ValidatedOptions {
     Optional,
     /// Such an attribute indicates that the key simply must exist and defined by the user.
     /// This likely indicates that it is a secret and should not be pushed to git.
-    DescriptionOnly,
+    Secret,
     /// Indicates what provided value the env variable will have and enforces this.
     WithValue(String),
     /// Suggests a default for what a variable should be, but won't be enforced.
@@ -420,20 +514,129 @@ enum ShieldResponse {
     },
     Success {
         status: ShieldStatus,
-        data: serde_json::Value,
+        checks_from_env: Box<SchemaCheck>,
     },
+}
+
+fn truncated(s: &str) -> String {
+    if s.len() <= MAX_DISPLAY_LEN {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..MAX_DISPLAY_LEN.saturating_sub(3)])
+    }
 }
 
 impl Display for ShieldResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ShieldResponse::Failed { status, error } => {
-                let _ = writeln!(f, "Status: {:?}", status);
-                write!(f, "{}", error)
+            ShieldResponse::Failed { status: _, error } => {
+                let _ = writeln!(f, "{} {}", "Error:".red().bold(), error);
+
+                write!(f, "")
             }
-            ShieldResponse::Success { status, data } => {
-                let _ = writeln!(f, "Status: {:?}", status);
-                write!(f, "{:#?}", data)
+            ShieldResponse::Success {
+                status: _,
+                checks_from_env,
+            } => {
+                let _ = writeln!(
+                    f,
+                    "{} schema at: ./{}",
+                    "Parsed:".green().bold(),
+                    SCHEMA_FILENAME
+                );
+
+                let num_correct = checks_from_env.existing_subset.len();
+                if num_correct > 0 {
+                    let _ = writeln!(
+                        f,
+                        "{} {}",
+                        "Conforming variables:".green().bold(),
+                        num_correct
+                    );
+                }
+
+                let _ = writeln!(f, "");
+
+                let max_key_len = checks_from_env
+                    .missing_values
+                    .keys()
+                    .chain(checks_from_env.missing_default.keys())
+                    .chain(checks_from_env.incorrect_values.keys())
+                    .chain(checks_from_env.missing_secrets.iter())
+                    .chain(checks_from_env.missing_optional.iter())
+                    .map(|k| k.len())
+                    .max()
+                    .unwrap_or(0);
+
+                if !checks_from_env.missing_optional.is_empty() {
+                    let _ = writeln!(
+                        f,
+                        "{}  {} optional variables missing from env:",
+                        "Warning:".yellow().bold(),
+                        checks_from_env.missing_optional.len(),
+                    );
+                    for key in checks_from_env.missing_optional.iter() {
+                        let _ = writeln!(f, "          {:width$} ", key, width = max_key_len);
+                    }
+                    let _ = writeln!(f, "");
+                }
+
+                // Incorrect Values
+                if !checks_from_env.incorrect_values.is_empty() {
+                    let _ = writeln!(
+                        f,
+                        "{} Variables with incorrect values:",
+                        "Error:".red().bold()
+                    );
+                }
+                for (key, incorrect_value) in checks_from_env.incorrect_values.iter() {
+                    let _ = writeln!(
+                        f,
+                        "          {:width$}: '{}'",
+                        key,
+                        truncated(incorrect_value),
+                        width = max_key_len
+                    );
+                }
+                if !checks_from_env.incorrect_values.is_empty() {
+                    let _ = writeln!(f);
+                }
+
+                let total_missing = checks_from_env.missing_values.len()
+                    + checks_from_env.missing_default.len()
+                    + checks_from_env.missing_secrets.len();
+                if total_missing > 0 {
+                    let _ = writeln!(
+                        f,
+                        "{}    {} {}",
+                        "Error:".red().bold(),
+                        total_missing.to_string().bold(),
+                        "required variables missing from env:".bold(),
+                    );
+                }
+                for (key, missing_value) in checks_from_env.missing_values.iter() {
+                    let _ = writeln!(
+                        f,
+                        "(value)   {:width$}: '{}'",
+                        key,
+                        truncated(missing_value),
+                        width = max_key_len
+                    );
+                }
+                for (key, missing_value) in checks_from_env.missing_default.iter() {
+                    let _ = writeln!(
+                        f,
+                        "(default) {:width$}: '{}'",
+                        key,
+                        truncated(missing_value),
+                        width = max_key_len
+                    );
+                }
+                for key in checks_from_env.missing_secrets.iter() {
+                    let _ = writeln!(f, "(secret)  {:width$}", key, width = max_key_len);
+                }
+
+                write!(f, "")
             }
         }
     }
@@ -478,27 +681,12 @@ impl ShieldResponse {
         };
 
         // Compare schema requirements with what is in the environment
-        let just_env: EnvMap = std::env::vars().collect();
-
-        // Compare schema requirements with what came from the .env
-        if dotenv::dotenv().is_err() {
-            return Self::Failed {
-                status: ShieldStatus::Recoverable,
-                error: "unable to load '.env' file".to_string(),
-            };
-        }
-
-        let env_with_dotenv: EnvMap = std::env::vars().collect();
-        let _just_dot_env: Vec<_> = env_with_dotenv
-            .iter()
-            .filter(|dot_env_var| just_env.iter().any(|env_var| &env_var == dot_env_var))
-            .collect();
-
-        // todo!();
+        let env_vars: EnvMap = std::env::vars().collect();
+        let checked_from_env = SchemaCheck::new(&schema, &env_vars);
 
         Self::Success {
             status: ShieldStatus::Operational,
-            data: serde_json::to_value(schema).unwrap(),
+            checks_from_env: Box::new(checked_from_env),
         }
     }
 }
@@ -514,33 +702,7 @@ struct InputArgs {
 
 fn main() {
     let args = InputArgs::parse();
-
-    // let env_data: HashMap<String, String> = dotenv::vars().collect();
-
-    // /// We keep track of the environment variables that are missing and distinguish
-    // /// them based on whether they're required or optional
-    // let missing_required: Vec<String> = vec![];
-    // let missing_optional: Vec<String> = vec![];
-
-    // // for (key, value) in env_file.iter() {
-    // //     dbg!(key, value);
-    // //     if key == "asdf" {
-
-    // //     }
-    // // }
-
-    // // For each entry in the schema, make sure that it exists in the environment
-    // // if it doesn't add it to the env file.
-    // for (key, data) in config.0.iter() {
-    //     if let Some(optional) = data.optional {}
-
-    //     if !env_data.contains_key(key) {
-    //         println!("missing: {}", key);
-    //     }
-    // }
-
     let response = ShieldResponse::new();
-
     if args.json {
         match serde_json::to_string_pretty(&response) {
             Ok(response) => {
@@ -551,6 +713,26 @@ fn main() {
             }
         }
     } else {
-        println!("{}", response);
+        print!("{}", response);
+    }
+
+    match response {
+        ShieldResponse::Failed {
+            status: _,
+            error: _,
+        } => std::process::exit(1),
+        ShieldResponse::Success {
+            status: _,
+            checks_from_env,
+        } => {
+            let total_missing = checks_from_env.missing_values.len()
+                + checks_from_env.missing_default.len()
+                + checks_from_env.missing_secrets.len();
+            if total_missing > 0 {
+                std::process::exit(1)
+            }
+
+            std::process::exit(0);
+        }
     }
 }

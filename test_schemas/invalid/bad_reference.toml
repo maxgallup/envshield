@@ -1,12 +1,13 @@
-version = "1"
+version = "2"
 
 
 [A]
 description = "variable A"
+value = "{{ }}"
 
 [B]
 description = "variable B"
-value = "some_value"
+value = "some_default"
 
 [C]
 description = "variable C"

@@ -10,7 +10,7 @@ value = "some_value"
 
 [C]
 description = "variable C"
-default = "some_default"
+default = 1
 
 [D]
 description = "variable D"

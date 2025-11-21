@@ -3,10 +3,11 @@ version = "1"
 
 [A]
 description = "variable A"
+value = "{{ NOT HERE }}"
 
 [B]
 description = "variable B"
-value = "some_value"
+value = "{{ C }}"
 
 [C]
 description = "variable C"

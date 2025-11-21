@@ -6,7 +6,7 @@ description = "variable A"
 
 [B]
 description = "variable B"
-value = "some_value"
+value = 1
 
 [C]
 description = "variable C"

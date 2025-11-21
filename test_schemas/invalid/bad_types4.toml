@@ -14,4 +14,4 @@ default = "some_default"
 
 [D]
 description = "variable D"
-optional = true
+optional = "true"

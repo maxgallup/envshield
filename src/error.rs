@@ -17,13 +17,13 @@ pub enum ShieldError {
     #[error("key [{0}] contains a reference to '{1}', but '{1}' can't resolve that reference")]
     DeadEndReference(String, String),
 
-    #[error("parsing reference: {0}")]
+    #[error("parsing: {0}")]
     ReferenceParsing(String),
 
-    #[error("with schema '.env.toml': {0}")]
+    #[error("with schema: 'env.toml': {0}")]
     Unrecoverable(String),
 
-    #[error("could not find schema '.env.toml': {0}")]
+    #[error("could not find schema file: 'env.toml': {0}")]
     MissingSchema(String),
 
     #[error("invalid schema: {0}")]
