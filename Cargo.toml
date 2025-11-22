@@ -1,6 +1,6 @@
 [package]
 name = "envshield"
-version = "0.0.3"
+version = "0.0.4"
 authors = ["Max Gallup <maxgallup@pm.me>"]
 description = "Define a schema for your .env files."
 readme = "README.md"
@@ -10,10 +10,10 @@ repository = "https://github.com/maxgallup/envshield"
 license = "GPL-3.0-or-later "
 keywords = ["cli", "env", "schema", "toml"]
 categories = ["command-line-interface", "command-line-utilities"]
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+exclude = [
+    ".flox",
+    ".github",
+]
 
 [profile.release]
 strip = true
